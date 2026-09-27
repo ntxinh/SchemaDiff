@@ -28,7 +28,7 @@ pub fn parse_config(cs: &str) -> Result<Config> {
 pub async fn connect(cs: &str) -> Result<DbClient> {
     let config = parse_config(cs)?;
     let tcp = TcpStream::connect(config.get_addr()).await.context("tcp connect")?;
-    tcp.set_nodelay(true)?;
+    tcp.set_nodelay(true).context("tcp set_nodelay")?;
     Client::connect(config, tcp.compat_write()).await.context("tds login")
 }
 
@@ -99,22 +99,22 @@ WHERE t.is_user_defined = 1;
 
 /// Run all six catalog queries and assemble a `Schema`.
 pub async fn fetch_schema(client: &mut DbClient) -> Result<Schema> {
-    async fn run(client: &mut DbClient, q: &str) -> Result<Vec<Row>> {
+    async fn run(client: &mut DbClient, label: &str, q: &str) -> Result<Vec<Row>> {
         client
             .simple_query(q)
             .await
-            .context("schema query")?
+            .with_context(|| format!("schema query: {label}"))?
             .into_first_result()
             .await
-            .context("schema query rows")
+            .with_context(|| format!("schema query rows: {label}"))
     }
 
-    let mut tables = rows_to_tables(&run(client, Q_COLUMNS).await?)?;
-    let modules = rows_to_modules(&run(client, Q_MODULES).await?)?;
-    apply_index_rows(&mut tables, &run(client, Q_INDEXES).await?)?;
-    apply_check_rows(&mut tables, &run(client, Q_CHECKS).await?)?;
-    apply_fk_rows(&mut tables, &run(client, Q_FKS).await?)?;
-    let udts = rows_to_udts(&run(client, Q_UDTS).await?)?;
+    let mut tables = rows_to_tables(&run(client, "columns", Q_COLUMNS).await?)?;
+    let modules = rows_to_modules(&run(client, "modules", Q_MODULES).await?)?;
+    apply_index_rows(&mut tables, &run(client, "indexes", Q_INDEXES).await?)?;
+    apply_check_rows(&mut tables, &run(client, "checks", Q_CHECKS).await?)?;
+    apply_fk_rows(&mut tables, &run(client, "fks", Q_FKS).await?)?;
+    let udts = rows_to_udts(&run(client, "udts", Q_UDTS).await?)?;
 
     Ok(Schema {
         tables: tables.into_values().collect(),
@@ -193,11 +193,18 @@ fn rows_to_tables(rows: &[Row]) -> Result<TableMap> {
 fn rows_to_modules(rows: &[Row]) -> Result<Vec<ModuleObject>> {
     rows.iter()
         .map(|row| {
+            let sch = req::<&str>(row, "sch")?;
+            let name = req::<&str>(row, "name")?;
+            let definition = opt::<&str>(row, "definition")?.with_context(|| {
+                format!(
+                    "definition NULL for {sch}.{name} — object is encrypted or login lacks VIEW DEFINITION"
+                )
+            })?;
             Ok(ModuleObject {
-                schema: req::<&str>(row, "sch")?.to_string(),
-                name: req::<&str>(row, "name")?.to_string(),
+                schema: sch.to_string(),
+                name: name.to_string(),
                 kind: map_obj_kind(req::<&str>(row, "type")?),
-                definition: req::<&str>(row, "definition")?.to_string(),
+                definition: definition.to_string(),
             })
         })
         .collect()
@@ -273,13 +280,21 @@ fn apply_check_rows(tables: &mut TableMap, rows: &[Row]) -> Result<()> {
     for row in rows {
         let sch = req::<&str>(row, "sch")?.to_string();
         let tbl = req::<&str>(row, "tbl")?.to_string();
+        let name = req::<&str>(row, "name")?.to_string();
+        let definition = opt::<&str>(row, "definition")?
+            .with_context(|| {
+                format!(
+                    "definition NULL for check constraint {name} on {sch}.{tbl} — login lacks VIEW DEFINITION"
+                )
+            })?
+            .to_string();
         let Some(t) = tables.get_mut(&(sch, tbl)) else {
             continue;
         };
         t.constraints.push(Constraint {
             kind: ConstraintKind::Check,
-            name: req::<&str>(row, "name")?.to_string(),
-            text: req::<&str>(row, "definition")?.to_string(),
+            name,
+            text: definition,
         });
     }
     Ok(())

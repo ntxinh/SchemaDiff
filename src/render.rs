@@ -93,7 +93,6 @@ pub fn udt_text(u: &UdtDef) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::*;
 
     #[test]
     fn type_names() {
