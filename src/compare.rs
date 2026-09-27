@@ -5,6 +5,8 @@ use crate::model::*;
 use crate::render::{module_text, table_text, udt_text};
 use serde::Serialize;
 
+pub use crate::model::Presence;
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub enum SchemaPayload {
     Table(TableSchema),

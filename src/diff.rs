@@ -16,8 +16,10 @@ pub struct DiffLine {
     pub target: String,
 }
 
-/// Line diff of two canonical texts; delete/insert runs are paired
-/// positionally into Modified rows.
+/// Line diff of two canonical texts; delete/insert runs are paired into
+/// Modified rows by row key (identifier after the COLUMN/CONSTRAINT/INDEX
+/// prefix). Unmatched rows stay Removed/Added — a dropped row next to a
+/// changed one is not misreported as a modification.
 pub fn diff_lines(source: &str, target: &str) -> Vec<DiffLine> {
     let diff = TextDiff::from_lines(source, target);
     let mut out = Vec::new();
@@ -39,15 +41,37 @@ pub fn diff_lines(source: &str, target: &str) -> Vec<DiffLine> {
 }
 
 fn flush(out: &mut Vec<DiffLine>, dels: &mut Vec<String>, ins: &mut Vec<String>) {
-    let n = dels.len().min(ins.len());
-    for (s, t) in dels.drain(..n).zip(ins.drain(..n)) {
-        out.push(DiffLine { kind: LineKind::Modified, source: s, target: t });
-    }
+    let mut free: Vec<String> = Vec::new();
     for s in dels.drain(..) {
+        match ins.iter().position(|t| row_key(t) == row_key(&s)) {
+            Some(j) => out.push(DiffLine {
+                kind: LineKind::Modified,
+                source: s,
+                target: ins.remove(j),
+            }),
+            None => free.push(s),
+        }
+    }
+    for s in free {
         out.push(DiffLine { kind: LineKind::Removed, source: s, target: String::new() });
     }
     for t in ins.drain(..) {
         out.push(DiffLine { kind: LineKind::Added, source: String::new(), target: t });
+    }
+}
+
+/// Identifier used to pair a deleted row with its modified replacement:
+/// the name token after a COLUMN/CONSTRAINT/INDEX-style prefix. Rows
+/// without a prefix key on their first token.
+fn row_key(s: &str) -> Option<&str> {
+    let mut w = s.split_whitespace();
+    match w.next()? {
+        "CONSTRAINT" => {
+            w.next()?; // constraint kind (PK/FK/CHECK/...)
+            w.next()
+        }
+        "COLUMN" | "INDEX" | "PK" | "FK" | "CHECK" | "DEFAULT" => w.next(),
+        k => Some(k),
     }
 }
 
