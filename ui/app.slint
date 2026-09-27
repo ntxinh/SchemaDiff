@@ -1,0 +1,166 @@
+import { Button, LineEdit, ListView, VerticalBox, HorizontalBox, ComboBox } from "std-widgets.slint";
+
+export struct TreeRow { kind: string, depth: int, expanded: bool, selected: bool, label: string, count: int }
+export struct DiffRow { kind: string, source: string, target: string }
+
+export global State {
+    in-out property <[TreeRow]> tree: [];
+    in-out property <[DiffRow]> diff: [];
+    in-out property <string> status: "Enter connection strings, then Compare Schemas.";
+    in-out property <bool> busy: false;
+    in-out property <int> source-state: 0;
+    in-out property <int> target-state: 0;
+    in-out property <bool> status-error: false;
+    in-out property <string> diff-title: "";
+    callback connect(bool, string);
+    callback compare(string, string);
+    callback tree-clicked(int);
+    callback copy-object();
+    callback copy-all();
+    callback export-object();
+    callback export-all(string);
+}
+
+component ConnDot inherits Rectangle {
+    in property <int> state;
+    width: 12px; height: 12px; border-radius: 6px;
+    background: state == 1 ? #2e7d32 : state == 2 ? #c62828 : #9e9e9e;
+}
+
+component DiffCell inherits Rectangle {
+    in property <string> text;
+    in property <string> kind;   // "added" | "removed" | "modified" | "unchanged"
+    in property <bool> tinted;   // whether this half participates in the diff color
+    background: !tinted ? #fafafa :
+        kind == "added" ? #d4f7d4 : kind == "removed" ? #f7d4d4 :
+        kind == "modified" ? #fdf3c4 : #ffffff;
+    Text {
+        text: parent.text; x: 6px; width: parent.width - 12px; height: parent.height;
+        font-family: "monospace"; font-size: 12px;
+        color: !parent.tinted ? #888888 :
+            parent.kind == "added" ? #1a5c1a : parent.kind == "removed" ? #8a1f1f :
+            parent.kind == "modified" ? #7a5c00 : #1a1a1a;
+        vertical-alignment: center; overflow: elide;
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "MSSQL Schema Compare";
+    preferred-width: 1200px; preferred-height: 760px;
+    min-width: 800px; min-height: 500px;
+
+    function row-bg(sel: bool) -> color { sel ? #bbdefb : transparent }
+
+    VerticalBox {
+        padding: 8px; spacing: 6px;
+
+        // --- connection bar ---
+        HorizontalBox {
+            spacing: 6px;
+            Text { text: "Source:"; vertical-alignment: center; }
+            src := LineEdit { placeholder-text: "Server=host;Database=DB;User Id=sa;Password=…;TrustServerCertificate=true"; enabled: !State.busy; }
+            ConnDot { state: State.source-state; }
+            Button { text: "Connect"; enabled: !State.busy; clicked => { State.connect(true, src.text); } }
+        }
+        HorizontalBox {
+            spacing: 6px;
+            Text { text: "Target:"; vertical-alignment: center; }
+            tgt := LineEdit { placeholder-text: "Server=host;Database=DB;User Id=sa;Password=…;TrustServerCertificate=true"; enabled: !State.busy; }
+            ConnDot { state: State.target-state; }
+            Button { text: "Connect"; enabled: !State.busy; clicked => { State.connect(false, tgt.text); } }
+        }
+        HorizontalBox {
+            spacing: 8px;
+            Button {
+                text: "Swap"; enabled: !State.busy;
+                clicked => {
+                    let tmp = src.text;
+                    src.text = tgt.text;
+                    tgt.text = tmp;
+                    let tmp-dot = State.source-state;
+                    State.source-state = State.target-state;
+                    State.target-state = tmp-dot;
+                }
+            }
+            Button { text: "Compare Schemas"; primary: true; enabled: !State.busy; clicked => { State.compare(src.text, tgt.text); } }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: "Export format:"; vertical-alignment: center; }
+            fmt := ComboBox { model: ["sql", "json", "csv"]; current-index: 0; width: 90px; }
+        }
+
+        // --- main split ---
+        HorizontalBox {
+            spacing: 6px; vertical-stretch: 1;
+
+            Rectangle {
+                width: 34%; border-width: 1px; border-color: #cccccc; background: #ffffff;
+                VerticalBox {
+                    padding: 4px; spacing: 0;
+                    Text { text: "Objects"; font-weight: 700; }
+                    ListView {
+                        for row[idx] in State.tree: Rectangle {
+                            height: 22px;
+                            background: root.row-bg(row.selected);
+                            HorizontalLayout {
+                                padding-left: row.depth * 14px; spacing: 4px;
+                                Text {
+                                    text: row.kind == "group" ? (row.expanded ? "▾" : "▸")
+                                        : row.kind == "object" ? (row.expanded ? "▾" : "▸") : " ";
+                                    width: 14px; vertical-alignment: center;
+                                }
+                                Text { text: row.label; vertical-alignment: center; overflow: elide; }
+                                Text {
+                                    text: row.count >= 0 ? "(" + row.count + ")" : "";
+                                    vertical-alignment: center; color: #666;
+                                }
+                            }
+                            TouchArea { clicked => { State.tree-clicked(idx); } }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                border-width: 1px; border-color: #cccccc; background: #ffffff;
+                VerticalBox {
+                    padding: 4px; spacing: 0;
+                    Text { text: "Diff View:" + (State.diff-title == "" ? "" : " " + State.diff-title); font-weight: 700; }
+                    ListView {
+                        for row in State.diff: Rectangle {
+                            height: 20px;
+                            HorizontalLayout {
+                                spacing: 0;
+                                DiffCell {
+                                    text: row.source; kind: row.kind;
+                                    tinted: row.kind == "removed" || row.kind == "modified" || row.kind == "unchanged";
+                                }
+                                Rectangle { width: 1px; background: #e0e0e0; }
+                                DiffCell {
+                                    text: row.target; kind: row.kind;
+                                    tinted: row.kind == "added" || row.kind == "modified" || row.kind == "unchanged";
+                                }
+                            }
+                        }
+                    }
+                    HorizontalBox {
+                        spacing: 6px;
+                        Button { text: "Copy Changes"; enabled: State.diff.length > 0; clicked => { State.copy-object(); } }
+                        Button { text: "Export SQL"; enabled: State.diff.length > 0; clicked => { State.export-object(); } }
+                        Button { text: "Copy All"; enabled: State.tree.length > 0; clicked => { State.copy-all(); } }
+                        Button { text: "Export All"; enabled: State.tree.length > 0; clicked => { State.export-all(fmt.current-value); } }
+                    }
+                }
+            }
+        }
+
+        // --- status bar ---
+        Rectangle {
+            height: 24px; background: #f0f0f0; border-width: 1px; border-color: #d0d0d0;
+            Text {
+                x: 8px; height: parent.height; text: (State.busy ? "⏳ " : "") + State.status;
+                vertical-alignment: center;
+                color: State.status-error ? #c62828 : #333333;
+            }
+        }
+    }
+}
