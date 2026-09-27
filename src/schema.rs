@@ -97,8 +97,10 @@ JOIN sys.types b ON b.user_type_id = t.system_type_id
 WHERE t.is_user_defined = 1;
 "#;
 
-/// Run all six catalog queries and assemble a `Schema`.
-pub async fn fetch_schema(client: &mut DbClient) -> Result<Schema> {
+/// Run all six catalog queries and assemble a `Schema`. A failed query lands
+/// in the returned warnings instead of aborting the fetch; the schema holds
+/// whatever succeeded.
+pub async fn fetch_schema(client: &mut DbClient) -> (Schema, Vec<String>) {
     async fn run(client: &mut DbClient, label: &str, q: &str) -> Result<Vec<Row>> {
         client
             .simple_query(q)
@@ -109,18 +111,50 @@ pub async fn fetch_schema(client: &mut DbClient) -> Result<Schema> {
             .with_context(|| format!("schema query rows: {label}"))
     }
 
-    let mut tables = rows_to_tables(&run(client, "columns", Q_COLUMNS).await?)?;
-    let modules = rows_to_modules(&run(client, "modules", Q_MODULES).await?)?;
-    apply_index_rows(&mut tables, &run(client, "indexes", Q_INDEXES).await?)?;
-    apply_check_rows(&mut tables, &run(client, "checks", Q_CHECKS).await?)?;
-    apply_fk_rows(&mut tables, &run(client, "fks", Q_FKS).await?)?;
-    let udts = rows_to_udts(&run(client, "udts", Q_UDTS).await?)?;
+    let mut warnings: Vec<String> = Vec::new();
+    let mut tables = TableMap::new();
+    let mut modules = Vec::new();
+    let mut udts = Vec::new();
 
-    Ok(Schema {
-        tables: tables.into_values().collect(),
-        modules,
-        udts,
-    })
+    if let Err(e) = run(client, "columns", Q_COLUMNS)
+        .await
+        .and_then(|r| rows_to_tables(&r).map(|t| tables = t))
+    {
+        warnings.push(format!("columns: {e:#}"));
+    }
+    if let Err(e) = run(client, "modules", Q_MODULES)
+        .await
+        .and_then(|r| rows_to_modules(&r).map(|m| modules = m))
+    {
+        warnings.push(format!("modules: {e:#}"));
+    }
+    for (label, q, apply) in [
+        ("indexes", Q_INDEXES, apply_index_rows as fn(&mut TableMap, &[Row]) -> Result<()>),
+        ("checks", Q_CHECKS, apply_check_rows as _),
+        ("fks", Q_FKS, apply_fk_rows as _),
+    ] {
+        if let Err(e) = run(client, label, q)
+            .await
+            .and_then(|r| apply(&mut tables, &r))
+        {
+            warnings.push(format!("{label}: {e:#}"));
+        }
+    }
+    if let Err(e) = run(client, "udts", Q_UDTS)
+        .await
+        .and_then(|r| rows_to_udts(&r).map(|u| udts = u))
+    {
+        warnings.push(format!("udts: {e:#}"));
+    }
+
+    (
+        Schema {
+            tables: tables.into_values().collect(),
+            modules,
+            udts,
+        },
+        warnings,
+    )
 }
 
 type TableKey = (String, String);
@@ -189,23 +223,32 @@ fn rows_to_tables(rows: &[Row]) -> Result<TableMap> {
     Ok(map)
 }
 
+/// A NULL definition means the object is encrypted or the login lacks VIEW
+/// DEFINITION; keep the object with a placeholder so it shows as a content
+/// diff rather than disappearing from the compare.
+fn module_object(sch: &str, name: &str, ty: &str, definition: Option<&str>) -> ModuleObject {
+    ModuleObject {
+        schema: sch.to_string(),
+        name: name.to_string(),
+        kind: map_obj_kind(ty),
+        definition: definition
+            .unwrap_or(
+                "-- definition unavailable (encrypted or insufficient VIEW DEFINITION permission)",
+            )
+            .to_string(),
+    }
+}
+
 /// Q2 → module objects (views, procs, functions, triggers).
 fn rows_to_modules(rows: &[Row]) -> Result<Vec<ModuleObject>> {
     rows.iter()
         .map(|row| {
-            let sch = req::<&str>(row, "sch")?;
-            let name = req::<&str>(row, "name")?;
-            let definition = opt::<&str>(row, "definition")?.with_context(|| {
-                format!(
-                    "definition NULL for {sch}.{name} — object is encrypted or login lacks VIEW DEFINITION"
-                )
-            })?;
-            Ok(ModuleObject {
-                schema: sch.to_string(),
-                name: name.to_string(),
-                kind: map_obj_kind(req::<&str>(row, "type")?),
-                definition: definition.to_string(),
-            })
+            Ok(module_object(
+                req::<&str>(row, "sch")?,
+                req::<&str>(row, "name")?,
+                req::<&str>(row, "type")?,
+                opt::<&str>(row, "definition")?,
+            ))
         })
         .collect()
 }
@@ -281,13 +324,11 @@ fn apply_check_rows(tables: &mut TableMap, rows: &[Row]) -> Result<()> {
         let sch = req::<&str>(row, "sch")?.to_string();
         let tbl = req::<&str>(row, "tbl")?.to_string();
         let name = req::<&str>(row, "name")?.to_string();
-        let definition = opt::<&str>(row, "definition")?
-            .with_context(|| {
-                format!(
-                    "definition NULL for check constraint {name} on {sch}.{tbl} — login lacks VIEW DEFINITION"
-                )
-            })?
-            .to_string();
+        // NULL definition → no VIEW DEFINITION; skip the constraint row.
+        let Some(definition) = opt::<&str>(row, "definition")? else {
+            continue;
+        };
+        let definition = definition.to_string();
         let Some(t) = tables.get_mut(&(sch, tbl)) else {
             continue;
         };
@@ -387,6 +428,18 @@ mod tests {
         // sys.objects.type is char(2): 'V' may arrive as 'V '.
         assert_eq!(map_obj_kind("V "), ObjKind::View);
         assert_eq!(map_obj_kind("TR "), ObjKind::Trigger);
+    }
+
+    #[test]
+    fn module_object_uses_placeholder_when_definition_null() {
+        let m = module_object("dbo", "v_secret", "V", None);
+        assert_eq!(m.kind, ObjKind::View);
+        assert_eq!(m.schema, "dbo");
+        assert!(m.definition.starts_with("-- definition unavailable"));
+
+        let m2 = module_object("dbo", "v1", "TR ", Some("CREATE TRIGGER v1"));
+        assert_eq!(m2.kind, ObjKind::Trigger);
+        assert_eq!(m2.definition, "CREATE TRIGGER v1");
     }
 
     #[test]

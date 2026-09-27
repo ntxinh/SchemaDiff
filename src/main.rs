@@ -61,10 +61,16 @@ fn push_diff(model: &VecModel<DiffRow>, o: &ObjectDiff) {
     );
 }
 
+/// Set the status-bar text; `is_error` drives the red color via State.status-error.
+fn status(state: &State, text: impl Into<SharedString>, is_error: bool) {
+    state.set_status(text.into());
+    state.set_status_error(is_error);
+}
+
 fn set_clipboard(state: &State, text: String) {
     match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
-        Ok(()) => state.set_status("Copied to clipboard.".into()),
-        Err(e) => state.set_status(format!("Clipboard failed: {e}").into()),
+        Ok(()) => status(state, "Copied to clipboard.", false),
+        Err(e) => status(state, format!("Clipboard failed: {e}"), true),
     }
 }
 
@@ -75,8 +81,8 @@ fn save_file(state: &State, default_name: &str, filter_name: &str, ext: &str, bo
         .save_file();
     if let Some(p) = path {
         match std::fs::write(&p, body) {
-            Ok(()) => state.set_status(format!("Saved {}", p.display()).into()),
-            Err(e) => state.set_status(format!("Save failed: {e}").into()),
+            Ok(()) => status(state, format!("Saved {}", p.display()), false),
+            Err(e) => status(state, format!("Save failed: {e}"), true),
         }
     }
 }
@@ -109,11 +115,17 @@ fn main() -> Result<(), slint::PlatformError> {
             } else {
                 st.set_target_state(0);
             }
-            st.set_status("Connecting…".into());
-            let _ = cmd_tx.send(Cmd::Test {
-                which: if is_source { Which::Source } else { Which::Target },
-                cs: cs.to_string(),
-            });
+            status(&st, "Connecting…", false);
+            if cmd_tx
+                .send(Cmd::Test {
+                    which: if is_source { Which::Source } else { Which::Target },
+                    cs: cs.to_string(),
+                })
+                .is_err()
+            {
+                status(&st, "Backend unavailable.", true);
+                st.set_busy(false);
+            }
         });
     }
 
@@ -127,7 +139,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let Some(app) = weak.upgrade() else { return };
             let st = app.global::<State>();
             st.set_busy(true);
-            st.set_status("Comparing…".into());
+            status(&st, "Comparing…", false);
             tree_model.set_vec(vec![]);
             diff_model.set_vec(vec![]);
             st.set_diff_title("".into());
@@ -137,10 +149,16 @@ fn main() -> Result<(), slint::PlatformError> {
                 s.expanded.clear();
                 s.selected = None;
             }
-            let _ = cmd_tx.send(Cmd::Compare {
-                src_cs: src_cs.to_string(),
-                tgt_cs: tgt_cs.to_string(),
-            });
+            if cmd_tx
+                .send(Cmd::Compare {
+                    src_cs: src_cs.to_string(),
+                    tgt_cs: tgt_cs.to_string(),
+                })
+                .is_err()
+            {
+                status(&st, "Backend unavailable.", true);
+                st.set_busy(false);
+            }
         });
     }
 
@@ -205,7 +223,7 @@ fn main() -> Result<(), slint::PlatformError> {
             };
             match text {
                 Some(t) => set_clipboard(&app.global::<State>(), t),
-                None => app.global::<State>().set_status("Nothing selected.".into()),
+                None => status(&app.global::<State>(), "Nothing selected.", false),
             }
         });
     }
@@ -234,7 +252,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     (Some(res), Some((g, o))) => {
                         let obj = &res.groups[g].objects[o];
                         Some((
-                            format!("{}.{}", obj.schema, obj.name),
+                            format!("{}.{}.sql", obj.schema, obj.name),
                             export::sql_for_object(obj, res.direction),
                         ))
                     }
@@ -243,7 +261,7 @@ fn main() -> Result<(), slint::PlatformError> {
             };
             match picked {
                 Some((name, body)) => save_file(&st, &name, "SQL", "sql", body),
-                None => st.set_status("Nothing selected.".into()),
+                None => status(&st, "Nothing selected.", false),
             }
         });
     }
@@ -266,7 +284,7 @@ fn main() -> Result<(), slint::PlatformError> {
             };
             match picked {
                 Some(Ok((name, fname, ext, body))) => save_file(&st, name, fname, ext, body),
-                Some(Err(e)) => st.set_status(format!("Export failed: {e}").into()),
+                Some(Err(e)) => status(&st, format!("Export failed: {e}"), true),
                 None => {}
             }
         });
@@ -296,31 +314,35 @@ fn main() -> Result<(), slint::PlatformError> {
                                 st.set_target_state(if ok { 1 } else { 2 });
                             }
                             if ok {
-                                st.set_status("Connected.".into());
+                                status(&st, "Connected.", false);
                             } else {
-                                st.set_status(format!("Connection failed: {msg}").into());
+                                status(&st, format!("Connection failed: {msg}"), true);
                             }
                         }
                         Reply::Result(res) => {
                             let mut s = store.borrow_mut();
                             s.expanded.clear();
                             s.selected = None;
-                            st.set_status(
-                                format!(
-                                    "{} objects compared, {} differences found.",
-                                    res.compared, res.different
-                                )
-                                .into(),
+                            let mut text = format!(
+                                "{} objects compared, {} differences found.",
+                                res.compared, res.different
                             );
+                            if !res.warnings.is_empty() {
+                                text.push_str(&format!(
+                                    " + {} fetch warning(s): {}",
+                                    res.warnings.len(),
+                                    res.warnings[0]
+                                ));
+                            }
+                            status(&st, text, false);
                             push_tree(&tree_model, &res, &s.expanded, None);
                             s.result = Some(*res);
                             st.set_busy(false);
                         }
                         Reply::Failed(m) => {
-                            st.set_status(format!("Compare failed: {m}").into());
+                            status(&st, format!("Compare failed: {m}"), true);
                             st.set_busy(false);
                         }
-                        Reply::Idle => {}
                     }
                 }
             },

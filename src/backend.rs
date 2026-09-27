@@ -19,7 +19,6 @@ pub enum Reply {
     Connected { which_is_source: bool, ok: bool, msg: String },
     Result(Box<CompareResult>),
     Failed(String),
-    Idle,
 }
 
 /// Spawn tokio thread + command loop; returns cmd sender.
@@ -55,7 +54,13 @@ pub fn start(reply_tx: Sender<Reply>) -> UnboundedSender<Cmd> {
 async fn run_compare(src_cs: &str, tgt_cs: &str) -> Result<CompareResult> {
     let mut a = connect(src_cs).await.context("source connect")?;
     let mut b = connect(tgt_cs).await.context("target connect")?;
-    let s = fetch_schema(&mut a).await.context("source schema fetch")?;
-    let t = fetch_schema(&mut b).await.context("target schema fetch")?;
-    Ok(compare(&s, &t, Direction::SourceToTarget))
+    let (s, sw) = fetch_schema(&mut a).await;
+    let (t, tw) = fetch_schema(&mut b).await;
+    let mut res = compare(&s, &t, Direction::SourceToTarget);
+    res.warnings = sw
+        .iter()
+        .map(|w| format!("source fetch: {w}"))
+        .chain(tw.iter().map(|w| format!("target fetch: {w}")))
+        .collect();
+    Ok(res)
 }

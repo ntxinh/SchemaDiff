@@ -7,8 +7,8 @@ async fn live_schema_diff() {
     if std::env::var("SCHEMADIFF_ITEST").is_err() { return; }
     let mut a = connect(&format!("{CS}schemadiff_src")).await.unwrap();
     let mut b = connect(&format!("{CS}schemadiff_tgt")).await.unwrap();
-    let src = fetch_schema(&mut a).await.unwrap();
-    let tgt = fetch_schema(&mut b).await.unwrap();
+    let (src, _w) = fetch_schema(&mut a).await;
+    let (tgt, _w) = fetch_schema(&mut b).await;
     let res = compare(&src, &tgt, Direction::SourceToTarget);
     assert!(res.compared >= 9);
     assert!(res.different >= 6);

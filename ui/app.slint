@@ -10,6 +10,7 @@ export global State {
     in-out property <bool> busy: false;
     in-out property <int> source-state: 0;
     in-out property <int> target-state: 0;
+    in-out property <bool> status-error: false;
     in-out property <string> diff-title: "";
     callback connect(bool, string);
     callback compare(string, string);
@@ -76,6 +77,9 @@ export component AppWindow inherits Window {
                     let tmp = src.text;
                     src.text = tgt.text;
                     tgt.text = tmp;
+                    let tmp-dot = State.source-state;
+                    State.source-state = State.target-state;
+                    State.target-state = tmp-dot;
                 }
             }
             Button { text: "Compare Schemas"; primary: true; enabled: !State.busy; clicked => { State.compare(src.text, tgt.text); } }
@@ -155,7 +159,7 @@ export component AppWindow inherits Window {
             Text {
                 x: 8px; height: parent.height; text: (State.busy ? "⏳ " : "") + State.status;
                 vertical-alignment: center;
-                color: State.source-state == 2 || State.target-state == 2 ? #c62828 : #333333;
+                color: State.status-error ? #c62828 : #333333;
             }
         }
     }

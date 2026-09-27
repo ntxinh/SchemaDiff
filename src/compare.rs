@@ -39,6 +39,8 @@ pub struct CompareResult {
     pub groups: Vec<ObjectGroup>,
     pub compared: usize,
     pub different: usize,
+    /// Partial-fetch warnings from the schema queries ("source fetch: …").
+    pub warnings: Vec<String>,
 }
 
 type SideMap = BTreeMap<(String, String), (String, SchemaPayload)>;
@@ -156,7 +158,13 @@ pub fn compare(src: &Schema, tgt: &Schema, direction: Direction) -> CompareResul
         groups.push(ObjectGroup { kind, objects });
     }
 
-    CompareResult { direction, groups, compared, different }
+    CompareResult {
+        direction,
+        groups,
+        compared,
+        different,
+        warnings: vec![],
+    }
 }
 
 #[cfg(test)]

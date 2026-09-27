@@ -112,6 +112,7 @@ mod tests {
             ],
             compared: 3,
             different: 2,
+            warnings: vec![],
         }
     }
 
