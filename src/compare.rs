@@ -39,7 +39,7 @@ pub struct CompareResult {
     pub different: usize,
 }
 
-type SideMap = BTreeMap<String, (String, SchemaPayload)>;
+type SideMap = BTreeMap<(String, String), (String, SchemaPayload)>;
 
 fn objects_of(s: &Schema, kind: ObjKind) -> SideMap {
     let mut m = SideMap::new();
@@ -47,7 +47,7 @@ fn objects_of(s: &Schema, kind: ObjKind) -> SideMap {
         ObjKind::Table => {
             for t in &s.tables {
                 m.insert(
-                    format!("{}.{}", t.schema, t.name),
+                    (t.schema.clone(), t.name.clone()),
                     (table_text(t), SchemaPayload::Table(t.clone())),
                 );
             }
@@ -55,7 +55,7 @@ fn objects_of(s: &Schema, kind: ObjKind) -> SideMap {
         ObjKind::Udt => {
             for u in &s.udts {
                 m.insert(
-                    format!("{}.{}", u.schema, u.name),
+                    (u.schema.clone(), u.name.clone()),
                     (udt_text(u), SchemaPayload::Udt(u.clone())),
                 );
             }
@@ -63,7 +63,7 @@ fn objects_of(s: &Schema, kind: ObjKind) -> SideMap {
         _ => {
             for md in s.modules.iter().filter(|md| md.kind == kind) {
                 m.insert(
-                    format!("{}.{}", md.schema, md.name),
+                    (md.schema.clone(), md.name.clone()),
                     (module_text(md), SchemaPayload::Module(md.clone())),
                 );
             }
@@ -86,16 +86,19 @@ pub fn compare(src: &Schema, tgt: &Schema, direction: Direction) -> CompareResul
     let mut different = 0;
 
     for kind in ObjKind::ALL {
-        let smap = objects_of(src, kind);
-        let tmap = objects_of(tgt, kind);
-        let keys: std::collections::BTreeSet<&String> =
+        let mut smap = objects_of(src, kind);
+        let mut tmap = objects_of(tgt, kind);
+        let keys: std::collections::BTreeSet<&(String, String)> =
             smap.keys().chain(tmap.keys()).collect();
+        let keys: Vec<(String, String)> = keys.into_iter().cloned().collect();
 
         let mut objects = Vec::new();
         for key in keys {
-            let (presence, lines, sp, tp) = match (smap.get(key), tmap.get(key)) {
+            let sv = smap.remove(&key);
+            let tv = tmap.remove(&key);
+            let (presence, lines, sp, tp) = match (sv, tv) {
                 (Some((st, sp)), Some((tt, tp))) => {
-                    (Presence::Both, diff_lines(st, tt), Some(sp.clone()), Some(tp.clone()))
+                    (Presence::Both, diff_lines(&st, &tt), Some(sp), Some(tp))
                 }
                 (Some((st, sp)), None) => (
                     Presence::OnlySource,
@@ -106,7 +109,7 @@ pub fn compare(src: &Schema, tgt: &Schema, direction: Direction) -> CompareResul
                             target: String::new(),
                         })
                         .collect(),
-                    Some(sp.clone()),
+                    Some(sp),
                     None,
                 ),
                 (None, Some((tt, tp))) => (
@@ -119,11 +122,10 @@ pub fn compare(src: &Schema, tgt: &Schema, direction: Direction) -> CompareResul
                         })
                         .collect(),
                     None,
-                    Some(tp.clone()),
+                    Some(tp),
                 ),
                 (None, None) => unreachable!("key from union of both maps"),
             };
-
             let changed: Vec<&DiffLine> =
                 lines.iter().filter(|l| l.kind != LineKind::Unchanged).collect();
             let summary = changed
@@ -132,15 +134,15 @@ pub fn compare(src: &Schema, tgt: &Schema, direction: Direction) -> CompareResul
                 .collect();
             let change_count = changed.len();
 
-            let (schema, name) = key.split_once('.').expect("key is schema.name");
+            let (schema, name) = key;
             compared += 1;
             if change_count > 0 {
                 different += 1;
             }
             objects.push(ObjectDiff {
                 kind,
-                schema: schema.to_string(),
-                name: name.to_string(),
+                schema,
+                name,
                 presence,
                 lines,
                 summary,
@@ -284,5 +286,26 @@ mod tests {
         );
         assert_eq!(r.compared, 4);
         assert_eq!(r.different, 4);
+    }
+
+    #[test]
+    fn dotted_schema_names_do_not_collide() {
+        // ("a.b","T") and ("a","b.c") must produce two distinct objects
+        let mut src = Schema::empty();
+        src.tables.push(TableSchema { schema: "a.b".into(), ..sample_table() });
+        src.tables.push(TableSchema {
+            schema: "a".into(),
+            name: "b.c".into(),
+            ..sample_table()
+        });
+        let tgt = Schema::empty();
+        let r = compare(&src, &tgt, Direction::SourceToTarget);
+        let tables = &r.groups[0].objects;
+        assert_eq!(tables.len(), 2);
+        assert_eq!(r.compared, 2);
+        assert_eq!(tables[0].schema, "a");
+        assert_eq!(tables[0].name, "b.c");
+        assert_eq!(tables[1].schema, "a.b");
+        assert_eq!(tables[1].name, "T");
     }
 }
