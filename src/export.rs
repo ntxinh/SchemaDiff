@@ -110,7 +110,7 @@ fn create_sql(_o: &ObjectDiff, tgt: &SchemaPayload, q: &str) -> String {
                 .map(|c| format!("    {}", col_def(c)))
                 .collect::<Vec<_>>()
                 .join(",\n");
-            format!("CREATE TABLE {q} (\n{cols}\n);\n-- review: add constraints/indexes\n")
+            format!("-- TODO: CREATE TABLE for {q} (see target)\nCREATE TABLE {q} (\n{cols}\n);\n-- review: add constraints/indexes\n")
         }
         SchemaPayload::Module(m) => format!("CREATE OR ALTER {}\n", after_create(&m.definition)),
         SchemaPayload::Udt(u) => udt_todo(u),
@@ -138,22 +138,22 @@ fn alter_table_sql(o: &ObjectDiff, s: &TableSchema, t: &TableSchema, q: &str) ->
             None => out.push_str(&format!("ALTER TABLE {q} ADD {};\n", col_def(c))),
             Some(sc) if sc.data_type != c.data_type || sc.nullable != c.nullable => {
                 out.push_str(&format!(
-                    "ALTER TABLE {q} ALTER COLUMN [{}] {} {};\n",
-                    c.name,
+                    "ALTER TABLE {q} ALTER COLUMN {} {} {};\n",
+                    qident(&c.name),
                     c.data_type,
                     if c.nullable { "NULL" } else { "NOT NULL" }
                 ));
                 if sc.identity != c.identity || sc.default != c.default {
                     out.push_str(&format!(
-                        "-- TODO: manual migration: identity/default changed on [{}]\n",
-                        c.name
+                        "-- TODO: manual migration: identity/default changed on {}\n",
+                        qident(&c.name)
                     ));
                 }
             }
             Some(sc) if sc.identity != c.identity || sc.default != c.default => {
                 out.push_str(&format!(
-                    "-- TODO: manual migration: identity/default changed on [{}]\n",
-                    c.name
+                    "-- TODO: manual migration: identity/default changed on {}\n",
+                    qident(&c.name)
                 ));
             }
             _ => {}
@@ -161,7 +161,7 @@ fn alter_table_sql(o: &ObjectDiff, s: &TableSchema, t: &TableSchema, q: &str) ->
     }
     for c in &s.columns {
         if !t.columns.iter().any(|tc| tc.name == c.name) {
-            out.push_str(&format!("ALTER TABLE {q} DROP COLUMN [{}];\n", c.name));
+            out.push_str(&format!("ALTER TABLE {q} DROP COLUMN {};\n", qident(&c.name)));
         }
     }
     // Constraint/index diffs: pair summary lines with diff lines; any changed
@@ -195,16 +195,16 @@ fn changed_lines(o: &ObjectDiff) -> impl Iterator<Item = (&DiffLine, &String)> {
 
 fn udt_todo(u: &UdtDef) -> String {
     format!(
-        "-- TODO: UDT [{}].[{}] cannot be altered; drop/recreate required.\n",
-        u.schema, u.name
+        "-- TODO: UDT {} cannot be altered; drop/recreate required.\n",
+        qname(&u.schema, &u.name)
     )
 }
 
 /// `[name] TYPE [NOT] NULL [IDENTITY] [DEFAULT <d>]`
 fn col_def(c: &Column) -> String {
     format!(
-        "[{}] {} {}{}{}",
-        c.name,
+        "{} {} {}{}{}",
+        qident(&c.name),
         c.data_type,
         if c.nullable { "NULL" } else { "NOT NULL" },
         if c.identity { " IDENTITY" } else { "" },
@@ -215,19 +215,41 @@ fn col_def(c: &Column) -> String {
     )
 }
 
-/// Definition text with a leading `CREATE` keyword stripped, for prefixing
-/// with `CREATE OR ALTER`.
+/// Strip a leading data-definition verb (`CREATE`, `CREATE OR ALTER`, or
+/// bare `ALTER` — sys.sql_modules stores whichever verb was submitted) so the
+/// caller can prepend `CREATE OR ALTER`. Case-insensitive; tolerates leading
+/// whitespace but not leading comments (common case is fine for a review script).
 fn after_create(def: &str) -> &str {
     let t = def.trim_start();
-    if t.len() >= 6 && t[..6].eq_ignore_ascii_case("create") {
-        t[6..].trim_start()
+    // word1 must be CREATE or ALTER; byte offsets stay valid since we only
+    // split at ASCII word boundaries.
+    let w1_end = t.find(char::is_whitespace).unwrap_or(t.len());
+    let (w1, rest1) = (&t[..w1_end], t[w1_end..].trim_start());
+    if w1.eq_ignore_ascii_case("create") {
+        let w2_end = rest1.find(char::is_whitespace).unwrap_or(rest1.len());
+        let (w2, rest2) = (&rest1[..w2_end], rest1[w2_end..].trim_start());
+        if w2.eq_ignore_ascii_case("or") {
+            let w3_end = rest2.find(char::is_whitespace).unwrap_or(rest2.len());
+            let (w3, rest3) = (&rest2[..w3_end], rest2[w3_end..].trim_start());
+            if w3.eq_ignore_ascii_case("alter") {
+                return rest3;
+            }
+        }
+        rest1
+    } else if w1.eq_ignore_ascii_case("alter") {
+        rest1
     } else {
         t
     }
 }
 
+/// `[name]` with `]` escaped as `]]`.
+fn qident(name: &str) -> String {
+    format!("[{}]", name.replace(']', "]]"))
+}
+
 fn qname(schema: &str, name: &str) -> String {
-    format!("[{}].[{}]", schema.replace(']', "]]"), name.replace(']', "]]"))
+    format!("{}.{}", qident(schema), qident(name))
 }
 
 fn kind_name(k: ObjKind) -> &'static str {
@@ -357,6 +379,27 @@ mod tests {
         let sql = sql_for_object(o, Direction::SourceToTarget);
         assert!(sql.starts_with("CREATE OR ALTER PROCEDURE dbo.p"), "{sql}");
         assert!(sql.contains("SELECT 42"), "{sql}");
+    }
+
+    #[test]
+    fn sql_normalizes_alter_and_create_or_alter_verbs() {
+        // sys.sql_modules stores the submitted verb verbatim: ALTER and
+        // CREATE OR ALTER must not produce "CREATE OR ALTER ALTER …".
+        let cases = [
+            ("ALTER PROCEDURE dbo.p AS SELECT 1", "CREATE OR ALTER PROCEDURE dbo.p AS SELECT 1"),
+            ("CREATE OR ALTER PROCEDURE dbo.p AS SELECT 1", "CREATE OR ALTER PROCEDURE dbo.p AS SELECT 1"),
+            ("CREATE PROCEDURE dbo.p AS SELECT 1", "CREATE OR ALTER PROCEDURE dbo.p AS SELECT 1"),
+            ("  create   or   alter\nprocedure dbo.p as select 1", "CREATE OR ALTER procedure dbo.p as select 1"),
+        ];
+        for (def, expected) in cases {
+            assert_eq!(format!("CREATE OR ALTER {}", after_create(def)), expected, "def: {def}");
+        }
+    }
+
+    #[test]
+    fn qident_escapes_brackets() {
+        assert_eq!(qident("a]b"), "[a]]b]");
+        assert_eq!(qname("we]ird", "t"), "[we]]ird].[t]");
     }
 
     #[test]
