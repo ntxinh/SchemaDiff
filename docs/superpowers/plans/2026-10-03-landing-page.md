@@ -462,7 +462,7 @@ Cards (exact copy; icons from lucide-react):
 1. `GitCompare` — "Live schema compare" — "Point it at any two SQL Server databases. Source to target, or swap the direction."
 2. `Database` — "Every object type" — "Tables, columns, constraints, indexes, views, stored procedures, functions, triggers, user-defined types."
 3. `Columns` — "Colored side-by-side diff" — "Git-style add / remove / context rows per object, grouped in a tree with change counts."
-4. `FileDown` — "Copy or export everything" — "Copy one object's changes or the whole comparison. Export text, JSON, CSV, or best-effort SQL. Read-only — nothing is ever written." (footer line inside card: mono `SELECT-only catalog reads` with `ShieldCheck` icon.)
+4. `FileDown` — "Copy or export everything" — "Copy one object's changes or the whole comparison. Export text, JSON, CSV, or best-effort SQL." (footer line inside card: mono `Read-only — nothing is ever written` with `ShieldCheck` icon.)
 
 ```tsx
 import { Columns, Database, FileDown, GitCompare, ShieldCheck } from 'lucide-react'
