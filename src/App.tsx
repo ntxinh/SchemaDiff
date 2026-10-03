@@ -1,13 +1,20 @@
 import Scene from './scene/Scene'
+import Nav from './components/Nav'
+import Hero from './components/Hero'
+import Features from './components/Features'
+import Pricing from './components/Pricing'
+import Footer from './components/Footer'
 
 export default function App() {
   return (
     <>
       <Scene />
+      <Nav />
       <main className="relative z-10 pointer-events-none">
-        <section className="min-h-screen" />
-        <section className="min-h-screen" />
-        <section className="min-h-screen" />
+        <Hero />
+        <Features />
+        <Pricing />
+        <Footer />
       </main>
     </>
   )
