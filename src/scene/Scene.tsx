@@ -49,6 +49,8 @@ export default function Scene() {
   return (
     <Canvas
       style={{ position: 'fixed', inset: 0, background: '#050505', pointerEvents: 'none' }}
+      eventSource={document.documentElement}
+      eventPrefix="client"
       dpr={[1, 2]}
       camera={{ position: [0, 0, 6], fov: 45 }}
       gl={{ antialias: true, alpha: false }}
