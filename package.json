@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "deploy": "vite build && git add docs && git commit -m 'site: rebuild' || true"
+    "deploy": "npm run build && git add docs && git commit -m 'site: rebuild'"
   },
   "dependencies": {
     "@fontsource/inter": "^5.3.0",

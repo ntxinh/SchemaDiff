@@ -31,7 +31,7 @@ export default function Pricing() {
                 </li>
               ))}
             </ul>
-            <a href={t.href} className="pointer-events-auto mt-6 block text-center rounded-lg border border-white/15 px-4 py-2 text-sm font-mono hover:bg-white/10 transition">
+            <a href={t.href} className="mt-6 block text-center rounded-lg border border-white/15 px-4 py-2 text-sm font-mono hover:bg-white/10 transition">
               {t.cta}
             </a>
           </div>

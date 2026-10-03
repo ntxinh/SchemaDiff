@@ -14,12 +14,15 @@ function Knot() {
     const p = scroll.current
     const { x, y } = state.pointer
     const damp = THREE.MathUtils.damp
+    // recentre on narrow viewports: world-unit half-width at z=0 is
+    // tan(fov/2)*dist*aspect ~ 1.15 on a 390px phone, so scale the drift down
+    const w = Math.min(1, state.viewport.width / 7)
 
     // mouse parallax
     g.rotation.y = damp(g.rotation.y, x * 0.4, 3, delta)
     g.rotation.x = damp(g.rotation.x, -y * 0.3, 3, delta)
     // scroll: hero right -> features left/back -> pricing receded
-    g.position.x = damp(g.position.x, THREE.MathUtils.lerp(1.4, -1.6, p), 3, delta)
+    g.position.x = damp(g.position.x, w * THREE.MathUtils.lerp(1.4, -1.6, p), 3, delta)
     g.position.y = damp(g.position.y, THREE.MathUtils.lerp(0, 0.9, p), 3, delta)
     g.position.z = damp(g.position.z, THREE.MathUtils.lerp(0, -2.2, p), 3, delta)
     const s = THREE.MathUtils.lerp(1, 0.6, p)

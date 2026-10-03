@@ -7,9 +7,9 @@ export default function Hero() {
   return (
     <section id="top" className="min-h-screen grid md:grid-cols-2 items-center px-6 md:px-12 max-w-7xl mx-auto">
       <div>
-        <h1 className="text-5xl md:text-7xl font-extrabold tracking-tight leading-[1.05]">
+        <h1 aria-label="Diff two databases. Ship without surprises." className="text-5xl md:text-7xl font-extrabold tracking-tight leading-[1.05]">
           {LINES.map((line) => (
-            <span key={line} className="block overflow-hidden">
+            <span key={line} aria-hidden="true" className="block overflow-hidden">
               {line.split('').map((c, i) => (
                 <motion.span
                   key={i}
@@ -30,7 +30,7 @@ export default function Hero() {
         </p>
         <a
           href="https://github.com/ntxinh/SchemaDiff"
-          className="pointer-events-auto mt-8 inline-flex items-center gap-2 rounded-lg px-6 py-3 font-mono text-sm border border-[#00F0FF]/60 bg-[#00F0FF]/10 text-[#00F0FF] shadow-[0_0_24px_-6px_#00F0FF] hover:bg-[#00F0FF]/20 transition"
+          className="mt-8 inline-flex items-center gap-2 rounded-lg px-6 py-3 font-mono text-sm border border-[#00F0FF]/60 bg-[#00F0FF]/10 text-[#00F0FF] shadow-[0_0_24px_-6px_#00F0FF] hover:bg-[#00F0FF]/20 transition"
         >
           View on GitHub <ArrowRight className="size-4" />
         </a>
